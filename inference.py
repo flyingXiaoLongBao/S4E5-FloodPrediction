@@ -5,7 +5,7 @@ import os
 from torch.utils.data import DataLoader
 
 from dataset import DatasetTest
-from model import FloodPredictionModel, FloodPredictionModelWithResidual
+from model import FloodPredictionModel, FloodPredictionModelWithResidual, FTTransformer
 from utils.devices import get_available_device
 
 # 模型参数
@@ -13,9 +13,63 @@ BATCH_SIZE = 64
 N_SPLITS = 5
 
 
+def average_model_weights(model, device):
+    """
+    查找并平均所有保存的模型权重
+    
+    Args:
+        model: 模型实例
+        device: 计算设备
+        
+    Returns:
+        bool: 是否成功加载并平均了模型参数
+    """
+    # 查找所有模型文件
+    model_paths = []
+    for root, dirs, files in os.walk('result'):
+        for file in files:
+            if file.startswith('best_model_fold_') and file.endswith('.pth'):
+                model_paths.append(os.path.join(root, file))
+            elif file.startswith('final_model_fold_') and file.endswith('.pth'):
+                model_paths.append(os.path.join(root, file))
+    
+    if not model_paths:
+        print("未找到任何模型文件")
+        return False
+    
+    print(f"找到 {len(model_paths)} 个模型文件，进行参数平均")
+    
+    # 获取当前模型状态字典
+    avg_state_dict = model.state_dict()
+    
+    # 对每个参数进行平均
+    for key in avg_state_dict.keys():
+        avg_state_dict[key] = torch.zeros_like(avg_state_dict[key], dtype=torch.float32)
+    
+    # 累加所有模型的参数
+    for model_path in model_paths:
+        try:
+            state_dict = torch.load(model_path, map_location=device)
+            for key in avg_state_dict.keys():
+                if key in state_dict:
+                    avg_state_dict[key] += state_dict[key].to(device)
+            print(f"成功加载模型参数: {model_path}")
+        except Exception as e:
+            print(f"加载模型参数失败: {model_path}, 错误: {e}")
+    
+    # 计算平均值
+    for key in avg_state_dict.keys():
+        avg_state_dict[key] /= len(model_paths)
+    
+    # 将平均后的参数加载到模型中
+    model.load_state_dict(avg_state_dict)
+    print(f"成功对模型参数进行平均化处理")
+    return True
+
+
 def ensemble_predict(device):
     """
-    集成预测：读取所有折的模型，对预测结果取平均值
+    集成预测：通过平均模型参数进行单次预测
     """
     # 设置设备
     device = device
@@ -32,53 +86,32 @@ def ensemble_predict(device):
     if len(ids) != len(test_dataset):
         raise ValueError(f"测试数据ID数量({len(ids)})与数据集长度({len(test_dataset)})不一致")
     
-    # 存储所有模型的预测结果
-    all_predictions = []
+    # 创建模型实例
+    model = FTTransformer().to(device)
     
-    # 加载每一折的模型并进行预测
-    available_models = 0
-    for fold in range(1, N_SPLITS + 1):
-        model_path = f'result/best_model_fold_{fold}.pth'
-        
-        # 检查模型文件是否存在
-        if not os.path.exists(model_path):
-            print(f"警告：模型文件 {model_path} 不存在，跳过该模型")
-            continue
-            
-        # 创建模型实例
-        # net = FloodPredictionModel().to(device)
-        model = FloodPredictionModelWithResidual().to(device)
-        
-        # 加载模型权重
-        model.load_state_dict(torch.load(model_path, map_location=device))
-        model.eval()
-        
-        # 存储当前模型的预测结果
-        fold_predictions = []
-        
-        # 进行预测
-        with torch.no_grad():
-            for features in test_loader:
-                features = features.to(device)
-                outputs = model(features)
-                fold_predictions.extend(outputs.cpu().numpy())
-        
-        all_predictions.append(fold_predictions)
-        available_models += 1
-        print(f"模型 {fold} 预测完成")
+    # 平均所有模型的参数
+    if not average_model_weights(model, device):
+        raise ValueError("无法加载模型参数进行平均")
     
-    if available_models == 0:
-        raise ValueError("没有找到任何模型文件进行预测")
+    # 设置模型为评估模式
+    model.eval()
     
-    print(f"共使用 {available_models} 个模型进行集成预测")
+    # 存储预测结果
+    predictions = []
     
-    # 计算所有模型预测结果的平均值
-    ensemble_predictions = np.mean(all_predictions, axis=0)
+    # 进行预测
+    with torch.no_grad():
+        for features in test_loader:
+            features = features.to(device)
+            outputs = model(features)
+            predictions.extend(outputs.cpu().numpy())
+    
+    print(f"使用平均模型参数完成预测")
     
     # 创建提交文件
     submission = pd.DataFrame({
         'id': ids,
-        'FloodProbability': ensemble_predictions.flatten()
+        'FloodProbability': np.array(predictions).flatten()
     })
     
     # 保存提交文件
