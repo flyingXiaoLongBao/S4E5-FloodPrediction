@@ -11,7 +11,7 @@ N_SPLITS = 5
 
 def load_lgbm_models():
     """
-    加载所有保存的LightGBM模型
+    加载所有保存的增强版LightGBM模型
     
     Returns:
         list: LightGBM模型列表
@@ -26,7 +26,7 @@ def load_lgbm_models():
                 model_files.append(os.path.join(root, file))
     
     if not model_files:
-        raise FileNotFoundError("未找到任何LightGBM模型文件")
+        raise FileNotFoundError("未找到任何增强版LightGBM模型文件")
     
     print(f"找到 {len(model_files)} 个模型文件")
     
@@ -39,11 +39,11 @@ def load_lgbm_models():
     return models
 
 
-def predict_with_lgbm_models():
+def predict_with_enhanced_lgbm_models():
     """
-    使用LightGBM模型进行预测
+    使用增强版LightGBM模型进行预测
     """
-    print("开始使用LightGBM模型进行预测...")
+    print("开始使用增强版LightGBM模型进行预测...")
     
     # 加载测试数据
     test_dataset = DatasetTest('data/test.csv')
@@ -83,7 +83,7 @@ def predict_with_lgbm_models():
     
     submission_path = 'result/submission_lgbm_model.csv'
     submission.to_csv(submission_path, index=False)
-    print(f"LightGBM模型预测完成，结果已保存到 {submission_path}")
+    print(f"增强版LightGBM模型预测完成，结果已保存到 {submission_path}")
 
 
 def main():
@@ -91,8 +91,8 @@ def main():
     主函数
     """
     try:
-        predict_with_lgbm_models()
-        print("\nLightGBM模型推理完成!")
+        predict_with_enhanced_lgbm_models()
+        print("\n增强版LightGBM模型推理完成!")
     except Exception as e:
         print(f"推理过程中发生错误: {e}")
         raise

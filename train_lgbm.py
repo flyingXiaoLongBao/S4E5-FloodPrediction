@@ -3,7 +3,7 @@ import pandas as pd
 from sklearn.model_selection import KFold
 import os
 
-from model import LightGBMComparisonModel
+from model import EnhancedLightGBMModel
 from dataset import DatasetTrain
 
 # 定义训练参数
@@ -13,9 +13,9 @@ RANDOM_STATE = 42
 
 def train_lgbm_model():
     """
-    使用LightGBM模型进行训练
+    使用增强版LightGBM模型进行训练
     """
-    print("开始训练LightGBM模型...")
+    print("开始训练增强版LightGBM模型...")
     
     # 创建数据集
     dataset = DatasetTrain('data/train.csv')
@@ -50,15 +50,21 @@ def train_lgbm_model():
         X_train, X_val = X[train_idx], X[val_idx]
         y_train, y_val = y[train_idx], y[val_idx]
         
-        # 初始化模型
-        model = LightGBMComparisonModel(
+        # 初始化增强版模型
+        model = EnhancedLightGBMModel(
             objective='regression',
             metric='rmse',
+            boosting='gbdt',
             learning_rate=0.05,
             num_leaves=64,
+            max_depth=-1,
+            min_data_in_leaf=20,
             feature_fraction=0.9,
             bagging_fraction=0.8,
             bagging_freq=5,
+            min_gain_to_split=0.0,
+            lambda_l1=0.0,
+            lambda_l2=0.0,
             verbosity=-1,
             random_state=RANDOM_STATE
         )
@@ -93,9 +99,15 @@ def train_lgbm_model():
         model.model.save_model(model_path)
         print(f'  模型已保存到: {model_path}')
         
-        # 保存特征重要性
-        feature_importance = model.get_feature_importance()
-        np.save(f'result/feature_importance_fold_{fold+1}.npy', feature_importance)
+        # 保存特征重要性 (两种类型)
+        feature_importance_split = model.get_feature_importance(importance_type='split')
+        feature_importance_gain = model.get_feature_importance(importance_type='gain')
+        
+        importance_dict = {
+            'split': feature_importance_split,
+            'gain': feature_importance_gain
+        }
+        np.save(f'result/feature_importance_fold_{fold+1}.npy', importance_dict)
         
     # 计算并打印平均结果
     mean_val_rmse = np.mean(fold_results)
@@ -120,7 +132,7 @@ def main():
     """
     try:
         model = train_lgbm_model()
-        print("\nLightGBM模型训练完成!")
+        print("\n增强版LightGBM模型训练完成!")
     except Exception as e:
         print(f"训练过程中发生错误: {e}")
         raise
