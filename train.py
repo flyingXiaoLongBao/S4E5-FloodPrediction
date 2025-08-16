@@ -15,7 +15,7 @@ from utils.plot import plot_training_validation_loss
 # 定义BATCH_SIZE和EPOCH
 # 根据测试，Apple M4 16GB设备可以支持高达4096的batch size
 BATCH_SIZE = 64
-EPOCH = 5
+EPOCH = 3
 N_SPLITS = 5
 
 
@@ -93,24 +93,24 @@ def load_and_average_model_weights(model, device):
     model_paths = []
     for root, dirs, files in os.walk('result'):
         for file in files:
-            if (file.startswith('best_model_fold_') or 
+            if (file.startswith('best_model_fold_') or
                 file.startswith('final_model_fold_')) and file.endswith('.pth'):
                 model_paths.append(os.path.join(root, file))
-    
+
     # 如果没有找到之前保存的模型，则使用当前模型
     if not model_paths:
         print("未找到任何已有模型参数，使用默认初始化")
         return False
-    
+
     print(f"找到 {len(model_paths)} 个已有模型参数，进行平均化处理")
-    
+
     # 获取当前模型状态字典
     avg_state_dict = model.state_dict()
-    
+
     # 对每个参数进行平均
     for key in avg_state_dict.keys():
         avg_state_dict[key] = torch.zeros_like(avg_state_dict[key], dtype=torch.float32)
-    
+
     # 累加所有模型的参数
     for model_path in model_paths:
         try:
@@ -121,11 +121,11 @@ def load_and_average_model_weights(model, device):
             print(f"成功加载模型参数: {model_path}")
         except Exception as e:
             print(f"加载模型参数失败: {model_path}, 错误: {e}")
-    
+
     # 计算平均值
     for key in avg_state_dict.keys():
         avg_state_dict[key] /= len(model_paths)
-    
+
     # 将平均后的参数加载到模型中
     model.load_state_dict(avg_state_dict)
     print("成功对所有模型参数进行平均化处理，作为初始化参数")
@@ -138,7 +138,7 @@ def train_model_with_kfold(device, full_dataset, resume_training=False):
 
     # 存储每折的验证损失
     fold_results = []
-    
+
     # 如果启用恢复训练，则创建一个模型实例用于加载平均权重
     if resume_training:
         print("加载并平均所有已有模型参数作为初始化参数")

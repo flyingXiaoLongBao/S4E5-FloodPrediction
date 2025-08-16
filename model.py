@@ -125,7 +125,7 @@ class FTTransformer(nn.Module):
     结合了Transformer架构和特征嵌入技术
     """
     
-    def __init__(self, input_size=20, d_model=128, nhead=8, num_layers=3, dropout_rate=0.3):
+    def __init__(self, input_size=20, d_model=256, nhead=8, num_layers=6, dropout_rate=0.3):
         """
         初始化FT-Transformer模型
         
@@ -151,18 +151,21 @@ class FTTransformer(nn.Module):
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=d_model,
             nhead=nhead,
-            dim_feedforward=d_model * 2,
+            dim_feedforward=d_model * 4,  # 增加前馈网络的维度
             dropout=dropout_rate,
             batch_first=True
         )
         self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
         
-        # 输出层
+        # 输出层 - 增加一层神经网络
         self.output_layer = nn.Sequential(
             nn.LayerNorm(d_model),
             nn.ReLU(),
-            nn.Dropout(dropout_rate),  # 添加dropout
-            nn.Linear(d_model, 1)
+            nn.Dropout(dropout_rate),
+            nn.Linear(d_model, d_model // 2),  # 添加一个中间层
+            nn.ReLU(),
+            nn.Dropout(dropout_rate),
+            nn.Linear(d_model // 2, 1)
         )
         
         # 初始化参数
