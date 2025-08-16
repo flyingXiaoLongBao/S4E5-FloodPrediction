@@ -1,273 +1,141 @@
-import torch
 import torch.nn as nn
-import torch.nn.functional as F
-from typing import Union, List
-import math
+import lightgbm as lgb
 
 
-class FloodPredictionModel(nn.Module):
+class LinearBaselineModel(nn.Module):
     """
-    用于洪水概率预测的多层感知机模型
-    适用于中等规模的回归任务
+    线性模型作为基准模型
     """
-    
-    def __init__(self, input_size=20, hidden_sizes=[128, 64, 32], dropout_rate=0.3):
+
+    def __init__(self, input_dim: int = 21):
         """
-        初始化模型
+        初始化线性基准模型
         
         Args:
-            input_size (int): 输入特征的数量
-            hidden_sizes (list): 隐藏层的大小列表
-            dropout_rate (float): Dropout比例，已从0.2提高到0.3
+            input_dim: 输入特征维度，包括新增的Sum72_75特征
         """
-        super(FloodPredictionModel, self).__init__()
-        
-        # 构建网络层
-        layers = []
-        prev_size = input_size
-        
-        for hidden_size in hidden_sizes:
-            layers.append(nn.Linear(prev_size, hidden_size))
-            layers.append(nn.ReLU())
-            layers.append(nn.Dropout(dropout_rate))
-            prev_size = hidden_size
-            
-        # 输出层
-        layers.append(nn.Linear(prev_size, 1))
-        
-        self.network = nn.Sequential(*layers)
-        
-    def forward(self, x: Union[torch.Tensor, List[torch.Tensor]]) -> torch.Tensor:
-        """
-        前向传播
-        
-        Args:
-            x (Tensor or list of Tensors): 输入特征张量或张量列表
-            
-        Returns:
-            Tensor: 预测结果
-        """
-        if isinstance(x, list):
-            x = torch.cat(x, dim=1)  # 将输入张量列表拼接
-            
-        # 确保输入是float32类型
-        if x.dtype != torch.float32:
-            x = x.to(dtype=torch.float32)
-            
-        return self.network(x).squeeze()
+        super(LinearBaselineModel, self).__init__()
+        self.linear = nn.Linear(input_dim, 1)
 
-
-class FloodPredictionModelWithResidual(nn.Module):
-    """
-    带残差连接的洪水概率预测模型
-    在深层网络中能更好地保留梯度信息
-    """
-    
-    def __init__(self, input_size=20, hidden_sizes=[128, 128, 64, 64, 32], dropout_rate=0.3):
-        """
-        初始化模型
-        
-        Args:
-            input_size (int): 输入特征的数量
-            hidden_sizes (list): 隐藏层的大小列表
-            dropout_rate (float): Dropout比例，已从0.2提高到0.3
-        """
-        super(FloodPredictionModelWithResidual, self).__init__()
-        
-        self.input_layer = nn.Linear(input_size, hidden_sizes[0])
-        self.dropout = nn.Dropout(dropout_rate)
-        
-        # 构建残差块
-        self.residual_blocks = nn.ModuleList()
-        prev_size = hidden_sizes[0]
-        
-        for i, hidden_size in enumerate(hidden_sizes):
-            self.residual_blocks.append(
-                ResidualBlock(prev_size, hidden_size, dropout_rate)
-            )
-            prev_size = hidden_size
-            
-        # 输出层
-        self.output_layer = nn.Linear(prev_size, 1)
-        
-    def forward(self, x: Union[torch.Tensor, List[torch.Tensor]]) -> torch.Tensor:
-        """
-        前向传播
-        
-        Args:
-            x (Tensor or list of Tensors): 输入特征张量或张量列表
-            
-        Returns:
-            Tensor: 预测结果
-        """
-        if isinstance(x, list):
-            x = torch.cat(x, dim=1)  # 将输入张量列表拼接
-            
-        # 确保输入是float32类型
-        if x.dtype != torch.float32:
-            x = x.to(dtype=torch.float32)
-            
-        x = F.relu(self.input_layer(x))
-        x = self.dropout(x)
-        
-        # 通过残差块
-        for block in self.residual_blocks:
-            x = block(x)
-            
-        # 输出层
-        x = self.output_layer(x)
-        return x.squeeze()
-
-
-class FTTransformer(nn.Module):
-    """
-    FT-Transformer模型实现，用于结构化数据的分类和回归任务
-    结合了Transformer架构和特征嵌入技术
-    """
-    
-    def __init__(self, input_size=20, d_model=256, nhead=8, num_layers=6, dropout_rate=0.3):
-        """
-        初始化FT-Transformer模型
-        
-        Args:
-            input_size (int): 输入特征的数量
-            d_model (int): Transformer模型的维度
-            nhead (int): 多头注意力机制的头数
-            num_layers (int): Transformer编码器层的数量
-            dropout_rate (float): Dropout比例，已从0.2提高到0.3
-        """
-        super(FTTransformer, self).__init__()
-        
-        self.input_size = input_size
-        self.d_model = d_model
-        
-        # 特征嵌入层 - 每个数值特征通过一个线性层映射到d_model维度
-        self.feature_embedding = nn.Linear(1, d_model)
-        
-        # 类别特征嵌入层 (这里我们假设所有特征都是数值型的)
-        # 如果有类别特征，可以添加nn.Embedding层
-        
-        # Transformer编码器层
-        encoder_layer = nn.TransformerEncoderLayer(
-            d_model=d_model,
-            nhead=nhead,
-            dim_feedforward=d_model * 4,  # 增加前馈网络的维度
-            dropout=dropout_rate,
-            batch_first=True
-        )
-        self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
-        
-        # 输出层 - 增加一层神经网络
-        self.output_layer = nn.Sequential(
-            nn.LayerNorm(d_model),
-            nn.ReLU(),
-            nn.Dropout(dropout_rate),
-            nn.Linear(d_model, d_model // 2),  # 添加一个中间层
-            nn.ReLU(),
-            nn.Dropout(dropout_rate),
-            nn.Linear(d_model // 2, 1)
-        )
-        
-        # 初始化参数
-        self._init_weights()
-        
-    def _init_weights(self):
-        """初始化模型权重"""
-        for module in self.modules():
-            if isinstance(module, nn.Linear):
-                nn.init.xavier_uniform_(module.weight)
-                if module.bias is not None:
-                    nn.init.zeros_(module.bias)
-    
-    def forward(self, x: Union[torch.Tensor, List[torch.Tensor]]) -> torch.Tensor:
-        """
-        前向传播
-        
-        Args:
-            x (Tensor or list of Tensors): 输入特征张量或张量列表
-            
-        Returns:
-            Tensor: 预测结果
-        """
-        if isinstance(x, list):
-            x = torch.cat(x, dim=1)  # 将输入张量列表拼接
-            
-        # 确保输入是float32类型
-        if x.dtype != torch.float32:
-            x = x.to(dtype=torch.float32)
-        
-        batch_size = x.size(0)
-        
-        # 将每个特征分离并嵌入到d_model维度
-        # x的形状: (batch_size, input_size)
-        # 转换为: (batch_size, input_size, 1)
-        x = x.unsqueeze(-1)
-        
-        # 特征嵌入: (batch_size, input_size, d_model)
-        x = self.feature_embedding(x)
-        
-        # 添加位置编码（这里使用可学习的位置编码）
-        # 在FT-Transformer中，通常使用可学习的位置编码或不使用位置编码
-        # 因为特征的顺序可能不具有实际意义
-        
-        # Transformer编码器: (batch_size, input_size, d_model)
-        x = self.transformer_encoder(x)
-        
-        # 全局池化: (batch_size, d_model)
-        x = torch.mean(x, dim=1)
-        
-        # 输出层: (batch_size, 1)
-        x = self.output_layer(x)
-        
-        return x.squeeze()
-
-
-class ResidualBlock(nn.Module):
-    """
-    残差块实现
-    """
-    
-    def __init__(self, input_size, output_size, dropout_rate=0.3):
-        """
-        初始化残差块
-        
-        Args:
-            input_size (int): 输入大小
-            output_size (int): 输出大小
-            dropout_rate (float): Dropout比例，已从0.2提高到0.3
-        """
-        super(ResidualBlock, self).__init__()
-        
-        self.linear1 = nn.Linear(input_size, output_size)
-        self.linear2 = nn.Linear(output_size, output_size)
-        self.dropout = nn.Dropout(dropout_rate)
-        self.relu = nn.ReLU()
-        
-        # 如果输入和输出大小不同，需要调整维度
-        self.shortcut = nn.Linear(input_size, output_size) if input_size != output_size else None
-        
     def forward(self, x):
         """
         前向传播
         
         Args:
-            x (Tensor): 输入张量
+            x: 输入特征张量，形状为(batch_size, input_dim)
             
         Returns:
-            Tensor: 输出张量
+            输出预测值，形状为(batch_size, 1)
         """
-        residual = x
+        x = self.linear(x)
+        # 保持输出形状为(batch_size, 1)
+        return x.view(-1, 1)
+
+
+class LightGBMComparisonModel:
+    """
+    LightGBM模型作为对比模型
+    """
+
+    def __init__(self,
+                 objective: str = 'regression',
+                 metric: str = 'rmse',
+                 learning_rate: float = 0.05,
+                 num_leaves: int = 64,
+                 feature_fraction: float = 0.9,
+                 bagging_fraction: float = 0.8,
+                 bagging_freq: int = 5,
+                 verbosity: int = -1,
+                 random_state: int = 42):
+        """
+        初始化LightGBM对比模型
         
-        out = self.relu(self.linear1(x))
-        out = self.dropout(out)
-        out = self.linear2(out)
-        out = self.dropout(out)
+        Args:
+            objective: 目标函数
+            metric: 评估指标
+            learning_rate: 学习率
+            num_leaves: 叶子节点数
+            feature_fraction: 特征采样比例
+            bagging_fraction: 样本采样比例
+            bagging_freq: 样本采样频率
+            verbosity: 日志详细程度
+            random_state: 随机种子
+        """
+        self.params = {
+            'objective': objective,
+            'metric': metric,
+            'learning_rate': learning_rate,
+            'num_leaves': num_leaves,
+            'feature_fraction': feature_fraction,
+            'bagging_fraction': bagging_fraction,
+            'bagging_freq': bagging_freq,
+            'verbosity': verbosity,
+            'seed': random_state
+        }
+        self.model = None
+        self.best_iteration = None
+
+    def fit(self, X, y, X_val=None, y_val=None, num_boost_round=5000, early_stopping_rounds=500):
+        """
+        训练模型
         
-        # 如果需要，调整残差的维度
-        if self.shortcut is not None:
-            residual = self.shortcut(x)
+        Args:
+            X: 训练特征矩阵，形状为(n_samples, n_features)
+            y: 训练目标值，形状为(n_samples,)
+            X_val: 验证特征矩阵，形状为(n_samples, n_features)
+            y_val: 验证目标值，形状为(n_samples,)
+            num_boost_round: 最大迭代次数
+            early_stopping_rounds: 早停轮数
+        """
+        # 创建训练数据集
+        train_set = lgb.Dataset(X, label=y)
+        
+        # 如果提供了验证集，则创建验证数据集
+        valid_sets = [train_set]
+        valid_names = ['train']
+        if X_val is not None and y_val is not None:
+            val_set = lgb.Dataset(X_val, label=y_val)
+            valid_sets.append(val_set)
+            valid_names.append('valid')
+        
+        # 训练模型
+        self.model = lgb.train(
+            self.params,
+            train_set,
+            num_boost_round=num_boost_round,
+            valid_sets=valid_sets,
+            valid_names=valid_names,
+            callbacks=[
+                lgb.early_stopping(stopping_rounds=early_stopping_rounds),
+                lgb.log_evaluation(period=100)
+            ]
+        )
+        
+        self.best_iteration = self.model.best_iteration
+
+    def predict(self, X):
+        """
+        预测
+        
+        Args:
+            X: 特征矩阵，形状为(n_samples, n_features)
             
-        out += residual  # 残差连接
-        out = self.relu(out)
+        Returns:
+            预测值，形状为(n_samples,)
+        """
+        if self.model is None:
+            raise ValueError("模型尚未训练，请先调用fit方法训练模型")
+
+        return self.model.predict(X, num_iteration=self.best_iteration)
+
+    def get_feature_importance(self):
+        """
+        获取特征重要性
         
-        return out
+        Returns:
+            特征重要性数组
+        """
+        if self.model is None:
+            raise ValueError("模型尚未训练，请先调用fit方法训练模型")
+
+        return self.model.feature_importance()

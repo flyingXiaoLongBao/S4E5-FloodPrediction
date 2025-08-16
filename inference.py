@@ -5,7 +5,7 @@ import os
 from torch.utils.data import DataLoader
 
 from dataset import DatasetTest
-from model import FloodPredictionModel, FloodPredictionModelWithResidual, FTTransformer
+from model import LinearBaselineModel
 from utils.devices import get_available_device
 
 # 模型参数
@@ -49,13 +49,15 @@ def average_model_weights(model, device):
     # 累加所有模型的参数
     for model_path in model_paths:
         try:
-            state_dict = torch.load(model_path, map_location=device)
+            checkpoint = torch.load(model_path, map_location=device)
+            state_dict = checkpoint.get('model_state_dict', checkpoint)
+            
             for key in avg_state_dict.keys():
                 if key in state_dict:
                     avg_state_dict[key] += state_dict[key].to(device)
-            print(f"成功加载模型参数: {model_path}")
         except Exception as e:
-            print(f"加载模型参数失败: {model_path}, 错误: {e}")
+            print(f"加载模型 {model_path} 时出错: {e}")
+            return False
     
     # 计算平均值
     for key in avg_state_dict.keys():
@@ -129,9 +131,47 @@ def ensemble_predict(device):
     return submission
 
 
-if __name__ == '__main__':
-    # 设置设备
+def predict_with_linear_model():
+    """
+    使用线性模型进行预测
+    """
+    # 获取可用设备
     device = get_available_device()
     print(f"使用设备: {device}")
     
-    ensemble_predict(device)
+    # 加载测试数据
+    test_dataset = DatasetTest('data/test.csv')
+    test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False)
+    
+    # 初始化模型
+    model = LinearBaselineModel(input_dim=21).to(device)  # 20个原始特征+1个新特征
+    
+    # 加载并平均模型权重
+    if not average_model_weights(model, device):
+        print("无法加载模型权重，使用随机初始化权重进行预测")
+    
+    # 进行预测
+    model.eval()
+    predictions = []
+    
+    with torch.no_grad():
+        for features in test_loader:
+            features = features.to(device)
+            outputs = model(features)
+            predictions.extend(outputs.cpu().numpy().flatten())
+    
+    # 保存预测结果
+    submission = pd.DataFrame({
+        'id': range(1117957, 1117957 + len(predictions)),
+        'FloodProbability': predictions
+    })
+    
+    # 确保预测值在[0, 1]范围内
+    submission['FloodProbability'] = np.clip(submission['FloodProbability'], 0, 1)
+    
+    submission.to_csv('result/submission_linear_model.csv', index=False)
+    print("线性模型预测完成，结果已保存到 result/submission_linear_model.csv")
+
+
+if __name__ == '__main__':
+    predict_with_linear_model()

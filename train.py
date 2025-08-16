@@ -8,7 +8,7 @@ import os
 import time
 
 from dataset import DatasetTrain
-from model import FloodPredictionModelWithResidual, FloodPredictionModel, FTTransformer
+from model import LinearBaselineModel
 from utils.devices import get_available_device
 from utils.plot import plot_training_validation_loss
 
@@ -99,10 +99,9 @@ def load_and_average_model_weights(model, device):
 
     # 如果没有找到之前保存的模型，则使用当前模型
     if not model_paths:
-        print("未找到任何已有模型参数，使用默认初始化")
         return False
 
-    print(f"找到 {len(model_paths)} 个已有模型参数，进行平均化处理")
+    print(f"找到 {len(model_paths)} 个模型文件，进行参数平均")
 
     # 获取当前模型状态字典
     avg_state_dict = model.state_dict()
@@ -114,140 +113,139 @@ def load_and_average_model_weights(model, device):
     # 累加所有模型的参数
     for model_path in model_paths:
         try:
-            state_dict = torch.load(model_path, map_location=device)
+            checkpoint = torch.load(model_path, map_location=device)
+            state_dict = checkpoint.get('model_state_dict', checkpoint)
+
             for key in avg_state_dict.keys():
                 if key in state_dict:
                     avg_state_dict[key] += state_dict[key].to(device)
-            print(f"成功加载模型参数: {model_path}")
         except Exception as e:
-            print(f"加载模型参数失败: {model_path}, 错误: {e}")
+            print(f"加载模型 {model_path} 时出错: {e}")
+            return False
 
     # 计算平均值
     for key in avg_state_dict.keys():
         avg_state_dict[key] /= len(model_paths)
 
-    # 将平均后的参数加载到模型中
+    # 加载平均后的参数
     model.load_state_dict(avg_state_dict)
-    print("成功对所有模型参数进行平均化处理，作为初始化参数")
+    print("模型参数平均完成")
     return True
 
 
-def train_model_with_kfold(device, full_dataset, resume_training=False):
-    # 初始化KFold
+def train_linear_model():
+    """
+    使用线性模型进行训练
+    """
+    # 获取可用设备
+    device = get_available_device()
+    print(f"使用设备: {device}")
+
+    # 创建数据集
+    dataset = DatasetTrain('data/train.csv')
+
+    # 创建K折交叉验证
     kfold = KFold(n_splits=N_SPLITS, shuffle=True, random_state=42)
 
-    # 存储每折的验证损失
     fold_results = []
 
-    # 如果启用恢复训练，则创建一个模型实例用于加载平均权重
-    if resume_training:
-        print("加载并平均所有已有模型参数作为初始化参数")
-        # 创建一个临时模型用于加载平均权重
-        temp_model = FTTransformer().to(device)
-        if load_and_average_model_weights(temp_model, device):
-            # 保存平均后的权重状态，供每折训练使用
-            avg_state_dict = temp_model.state_dict()
-            print("模型参数已准备就绪")
-        else:
-            avg_state_dict = None
-            print("使用默认初始化参数")
-    else:
-        avg_state_dict = None
+    # 创建结果目录
+    os.makedirs('result', exist_ok=True)
 
-    # 进行K折交叉验证
-    for fold, (train_idx, val_idx) in enumerate(kfold.split(full_dataset)):
-        print(f"正在训练第 {fold + 1}/{N_SPLITS} 折")
+    for fold, (train_idx, val_idx) in enumerate(kfold.split(dataset)):
+        print(f"\n开始训练第 {fold + 1}/{N_SPLITS} 折")
 
-        # 创建训练和验证子集
-        train_subset = Subset(full_dataset, train_idx)
-        val_subset = Subset(full_dataset, val_idx)
+        # 创建数据加载器
+        train_subset = Subset(dataset, train_idx)
+        val_subset = Subset(dataset, val_idx)
 
-        # 创建数据加载器，添加num_workers和pin_memory优化MPS性能
-        train_loader = DataLoader(train_subset, batch_size=BATCH_SIZE, shuffle=True, drop_last=True, num_workers=2)
-        val_loader = DataLoader(val_subset, batch_size=BATCH_SIZE, shuffle=False, drop_last=False, num_workers=2)
+        train_loader = DataLoader(train_subset, batch_size=BATCH_SIZE, shuffle=True)
+        val_loader = DataLoader(val_subset, batch_size=BATCH_SIZE, shuffle=False)
 
-        # 定义模型
-        # net = FloodPredictionModel().to(device)
-        # net = FloodPredictionModelWithResidual().to(device)
-        net = FTTransformer().to(device)  # 使用新的FT-Transformer模型
+        # 初始化模型
+        model = LinearBaselineModel(input_dim=21).to(device)  # 20个原始特征+1个新特征
 
-        # 如果启用了恢复训练并且成功加载了平均权重，则应用到当前模型
-        if resume_training and avg_state_dict is not None:
-            net.load_state_dict(avg_state_dict)
-            print(f"第 {fold + 1} 折已加载平均模型参数作为初始化参数")
+        # 尝试加载并平均已有模型权重
+        load_and_average_model_weights(model, device)
 
-        # 定义损失函数、优化器、学习率调度
-        criterion = RMSELoss().to(device)  # 使用RMSE损失函数替代MSE
-        # 降低学习率，从0.001降到0.0001，并增加L2正则化权重从1e-5到1e-4
-        optimizer = optim.Adam(net.parameters(), lr=0.0001, weight_decay=1e-4)
-        # 调整学习率调度器参数，减小patience并降低factor
-        scheduler = ReduceLROnPlateau(optimizer, mode='min', patience=2, factor=0.3)
+        # 定义损失函数和优化器
+        criterion = RMSELoss()
+        optimizer = optim.Adam(model.parameters(), lr=0.001, weight_decay=1e-5)
+        scheduler = ReduceLROnPlateau(optimizer, mode='min', patience=5, factor=0.5)
 
-        # 记录最佳验证损失，初始化为无穷大确保第一轮训练后能保存模型
+        # 记录每折的最佳验证损失和损失历史
         best_val_loss = float('inf')
-
-        # 定义数组保存每轮训练的损失
         train_losses = []
         val_losses = []
 
-        # 训练循环
+        # 训练多个epoch
         for epoch in range(EPOCH):
-            # 训练阶段
-            train_loss = train_one_epoch(net, train_loader, criterion, optimizer, device)
-            train_losses.append(train_loss)
+            # 训练一个epoch
+            train_loss = train_one_epoch(model, train_loader, criterion, optimizer, device)
 
-            # 验证阶段
-            val_loss = validate_model(net, val_loader, criterion, device)
-            val_losses.append(val_loss)
+            # 验证模型
+            val_loss = validate_model(model, val_loader, criterion, device)
 
             # 更新学习率
             scheduler.step(val_loss)
 
+            train_losses.append(train_loss)
+            val_losses.append(val_loss)
+
+            print(f'Epoch [{epoch + 1}/{EPOCH}], Train Loss: {train_loss:.6f}, Val Loss: {val_loss:.6f}')
+
             # 保存最佳模型
             if val_loss < best_val_loss:
                 best_val_loss = val_loss
-                # 保存模型到result目录，使用原始文件名格式
-                model_filename = f'result/best_model_fold_{fold + 1}.pth'
-                torch.save(net.state_dict(), model_filename)
-                print(f'  新的最佳模型已保存: {model_filename}')
+                torch.save({
+                    'model_state_dict': model.state_dict(),
+                    'optimizer_state_dict': optimizer.state_dict(),
+                    'epoch': epoch,
+                    'best_val_loss': best_val_loss
+                }, f'result/best_model_fold_{fold + 1}.pth')
+                print(f"第 {fold + 1} 折的最佳模型已保存，验证损失: {best_val_loss:.6f}")
 
-            print(f'Fold [{fold + 1}/{N_SPLITS}], Epoch [{epoch + 1}/{EPOCH}], '
-                  f'Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}')
+        # 保存每折的最终模型
+        torch.save({
+            'model_state_dict': model.state_dict(),
+            'optimizer_state_dict': optimizer.state_dict(),
+            'epoch': EPOCH - 1,
+            'best_val_loss': best_val_loss
+        }, f'result/final_model_fold_{fold + 1}.pth')
+        print(f"第 {fold + 1} 折的最终模型已保存")
 
-        # 保存每折的损失历史到result目录
+        # 保存损失历史
         loss_history = {
             'train_losses': train_losses,
             'val_losses': val_losses
         }
-        torch.save(loss_history, f'result/loss_history_fold_{fold + 1}.pth')
+        np.save(f'result/loss_history_fold_{fold + 1}.npy', loss_history)
 
-        # 绘制并保存损失曲线图
-        plot_title = f'Fold {fold + 1} Training and Validation Loss'
-        save_path = f'result/loss_curve_fold_{fold + 1}.png'
-        plot_training_validation_loss(train_losses, val_losses, plot_title, save_path)
+        # 绘制并保存损失曲线
+        plot_training_validation_loss(
+            train_losses,
+            val_losses,
+            f'result/loss_curve_fold_{fold + 1}.png',
+            f'第 {fold + 1} 折训练和验证损失曲线'
+        )
 
         fold_results.append(best_val_loss)
-        print(f'第 {fold + 1} 折最佳验证损失: {best_val_loss:.4f}')
+        print(f"第 {fold + 1} 折训练完成，最佳验证损失: {best_val_loss:.6f}")
 
-    print(f'K折交叉验证完成')
-    print(f'各折验证损失: {fold_results}')
-    print(f'平均验证损失: {np.mean(fold_results):.4f} ± {np.std(fold_results):.4f}')
+    # 计算并打印平均结果
+    mean_val_loss = np.mean(fold_results)
+    std_val_loss = np.std(fold_results)
+    print(f"\nK折交叉验证结果:")
+    print(f"平均验证损失: {mean_val_loss:.6f} ± {std_val_loss:.6f}")
 
-    return fold_results
+    # 保存整体结果
+    overall_results = {
+        'fold_results': fold_results,
+        'mean_val_loss': mean_val_loss,
+        'std_val_loss': std_val_loss
+    }
+    np.save('result/overall_results.npy', overall_results)
 
 
 if __name__ == '__main__':
-    # 使用GPU训练
-    device = get_available_device()
-    print(f"使用设备: {device}")
-
-    # 定义数据
-    full_dataset = DatasetTrain('data/train.csv')
-
-    # 确保result目录存在
-    os.makedirs('result', exist_ok=True)
-
-    # 执行K折交叉验证，启用恢复训练功能
-    fold_results = train_model_with_kfold(device, full_dataset, resume_training=False)
-
-    print("所有模型、损失历史和损失曲线图已保存到 result 目录中，可用于后续推理时取平均值")
+    train_linear_model()
